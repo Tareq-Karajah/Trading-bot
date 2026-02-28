@@ -1,3 +1,12 @@
+# Automated Trading Bot — Technical Specification v1.0
+
+Status: LOCKED  
+Last updated: 2026-02  
+Scope: Strategy, Risk, Architecture
+
+This document is the single source of truth.
+Any deviation requires explicit approval.
+
 AUTOMATED TRADING BOT
 Technical Architecture & Implementation Specification
 Version 1.0 — Production-Ready Documentation
