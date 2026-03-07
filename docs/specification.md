@@ -1,524 +1,721 @@
-# Automated Trading Bot — Technical Specification v1.0
-
-Status: LOCKED  
-Last updated: 2026-02  
-Scope: Strategy, Risk, Architecture
-
-This document is the single source of truth.
-Any deviation requires explicit approval.
-
-AUTOMATED TRADING BOT
-Technical Architecture & Implementation Specification
-Version 1.0 — Production-Ready Documentation
-
-
-1. Executive Overview
-
-1.1 Purpose of the Trading Bot
-This document constitutes the complete technical specification for an automated, algorithmic trading system (hereafter referred to as the "Trading Bot" or "System"). The System is designed to autonomously identify, evaluate, and execute trades across multiple financial markets using statistically robust, mathematically defined strategies. It operates without continuous human supervision once deployed, relying on deterministic signal logic, adaptive risk management, and real-time data ingestion.
-The Trading Bot is not a heuristic or black-box system. All decisions are traceable to explicit quantitative rules, reproducible backtested models, and defined risk parameters. It is built to operate in production-grade environments with high reliability, low latency, and auditability.
-
-1.2 Core Objectives
-    • Profitability: Generate consistent risk-adjusted returns (target Sharpe Ratio > 1.5 annualized) through statistically validated edge, not speculative positioning.
-    • Risk Control: Enforce hard position limits, stop-losses, and portfolio-level risk caps at all times. Capital preservation is treated as a higher priority than maximizing returns.
-    • Scalability: The architecture must support scaling from single-asset operation to a multi-strategy, multi-asset portfolio managing up to $10M AUM without fundamental redesign.
-    • Auditability: Every signal, order, and risk event must be logged with millisecond-precision timestamps for post-trade analysis and regulatory review.
-    • Resilience: The system must handle API failures, exchange outages, network disruptions, and data anomalies without entering undefined states or losing capital.
-
-1.3 Target Markets
-Market	Instruments	Rationale
-Cryptocurrency (Primary)	BTC/USDT, ETH/USDT, top-10 altcoins	24/7 liquidity, API maturity, tight spreads, high volatility = larger edges
-Forex (Secondary)	EUR/USD, GBP/USD, USD/JPY majors	Deep liquidity, institutional participation, well-defined technical levels
-US Equities (Tertiary)	S&P 500 components, ETFs (SPY, QQQ)	Regulatory clarity, established market microstructure
-Futures (Optional)	ES, NQ, CL contracts	Leverage efficiency, exchange-level clearing, transparent pricing
-
-1.4 Operational Timeframes
-Timeframe	Holding Period	Signal Source	Target Trades/Day
-Scalping	Seconds to 5 minutes	Order book imbalance, tick data	50-200
-Intraday (Primary)	15 minutes to 4 hours	OHLCV, momentum, volume	5-20
-Swing (Secondary)	1-10 days	Trend, macro momentum	1-5
-The primary operational focus is intraday trading, which offers the best balance between signal frequency, transaction cost efficiency, and risk control. Scalping is implemented where exchange latency permits; swing trading serves as a portfolio stabilizer.
-
-2. Strategy Architecture
-
-2.1 Algorithmic Strategy Comparison
-The following matrix evaluates seven major algorithmic trading strategy types across the dimensions most critical for bot automation:
-
-Strategy	Edge Type	Latency Req.	Win Rate	Avg R:R	Automation Score
-Market Making	Spread capture	Ultra-low (<1ms)	55-65%	0.8:1	8/10 (specialized)
-Trend Following	Momentum persistence	Low-medium	35-45%	2.5:1	9/10
-Mean Reversion	Statistical equilibrium	Low	55-65%	1.2:1	9/10
-Statistical Arbitrage	Price dislocation	Low-medium	60-70%	1.0:1	8/10
-Momentum Breakout	Volatility expansion	Low	40-50%	2.0:1	10/10
-Grid Trading	Range oscillation	Low	70-80%	0.5:1	9/10 (range markets)
-ML-Based	Pattern recognition	Low-medium	50-65%	Variable	7/10 (complex)
-
-2.2 Recommended Primary Strategy: Momentum Breakout with Trend Filter
-After systematic evaluation, the recommended primary strategy is Momentum Breakout with a Multi-Timeframe Trend Filter. This hybrid approach is recommended for the following reasons:
-    • Automation Suitability: Entry and exit conditions are 100% rule-based and deterministic. No subjective judgment is required, making it ideal for bot execution.
-    • Edge Persistence: Momentum and breakout effects are documented across asset classes in peer-reviewed financial literature (Jegadeesh & Titman, 1993; Moskowitz et al., 2012). The edge persists across market regimes when combined with a trend filter.
-    • Latency Tolerance: Unlike market making or HFT arbitrage, momentum breakout strategies have holding periods of minutes to hours, removing the need for sub-millisecond execution infrastructure. A 50-500ms execution latency is acceptable.
-    • Risk Profile: Clear stop-loss placement at structural levels (below breakout origin) with defined reward-to-risk ratios of 2:1 or greater. Risk is mechanically capped per trade.
-    • Scalability: Signal generation scales linearly with the number of assets monitored. The same logic applies across crypto, forex, and equities without strategy-specific customization.
-
-	2.3 Entry Logic Rules
-2.3.1 Multi-Timeframe Trend Confirmation
-Before any entry is considered, the trend on the higher timeframe (HTF) must be confirmed:
-HTF_Trend = +1 if EMA(20, 4H) > EMA(50, 4H) else -1
-LTF_Signal = Breakout confirmed on 15-min or 1-hour chart
-Entry is only permitted in the direction of HTF_Trend. Counter-trend trades are prohibited.
-
-2.3.2 Breakout Entry Condition
-A breakout is defined as a candle close above the Donchian Channel upper band (for longs) or below the lower band (for shorts):
-Donchian_Upper(N) = MAX(High, N periods)  [N = 20 by default]
-Donchian_Lower(N) = MIN(Low, N periods)
-Long Entry: Close(t) > Donchian_Upper(t-1) AND HTF_Trend = +1
-Short Entry: Close(t) < Donchian_Lower(t-1) AND HTF_Trend = -1
-
-2.3.3 Volume Confirmation Filter
-All breakouts must be confirmed by above-average volume to filter false breakouts:
-Volume_MA(20) = Simple Moving Average of Volume over 20 periods
-Volume Condition: Volume(t) > 1.5 * Volume_MA(20)
-
-2.3.4 Volatility Filter (ATR-Based)
-Entries are skipped during extremely low or extremely high volatility regimes:
-ATR(14) = Average True Range over 14 periods
-ATR_Ratio = ATR(14) / Close(t)
-Valid Range: 0.003 <= ATR_Ratio <= 0.04  (0.3% to 4% of price)
-
-2.4 Exit Logic Rules
-2.4.1 Stop-Loss Placement
-Stop_Loss = Entry_Price - (ATR(14) * 1.5)  [for longs]
-Stop_Loss = Entry_Price + (ATR(14) * 1.5)  [for shorts]
-Stop-loss is placed 1.5 ATR below the entry for longs and above for shorts. This places the stop beyond typical noise levels while keeping risk defined.
-
-2.4.2 Take-Profit Targets
-TP1 = Entry_Price + (ATR(14) * 3.0)   [50% of position, R:R = 2:1]
-TP2 = Entry_Price + (ATR(14) * 6.0)   [remaining, R:R = 4:1]
-Position is split 50/50 across two targets. Upon hitting TP1, the stop-loss for the remaining position is moved to breakeven.
-
-2.4.3 Trailing Stop (Post TP1)
-Trailing_Stop = Highest_Close - (ATR(14) * 2.0)  [updated each bar]
-
-2.5 Position Sizing Model
-Position sizing uses the Fixed Fractional (Kelly-inspired) model with a conservative fraction to limit drawdown:
-Risk_Per_Trade = Account_Equity * 0.01   [1% of equity at risk]
-Stop_Distance = |Entry_Price - Stop_Loss|
-Position_Size = Risk_Per_Trade / Stop_Distance
-For leveraged instruments, position size is additionally capped by:
-Max_Position_Value = Account_Equity * Max_Leverage_Factor
-where Max_Leverage_Factor is set to 3x for crypto, 10x for forex, and 1x for equities. Never exceed the lesser of the two constraints.
-
-2.6 Risk-Reward Framework
-Parameter	Value	Justification
-Minimum R:R Ratio	2.0:1	Allows profitability at win rates as low as 34%
-Target R:R Ratio	3.0:1+	Provides buffer for slippage and transaction costs
-Max Risk Per Trade	1% of equity	Limits max consecutive loss sequence to -10% at 10 losses
-Max Open Positions	5 concurrent	Limits correlated exposure across assets
-Max Portfolio Heat	5% of equity	Sum of all open position risk cannot exceed 5%
-Trade Frequency	5-20 per day	Sufficient for statistical significance
-
-3. Mathematical & Statistical Model
-
-3.1 Technical Indicators and Signals
-Indicator	Formula	Parameters	Purpose
-EMA	EMA(t) = alpha*P(t) + (1-alpha)*EMA(t-1), alpha=2/(N+1)	N=20, 50	Trend direction filter
-ATR	ATR(14) = EMA(TrueRange, 14)	N=14	Volatility measurement, stop sizing
-Donchian Channel	Upper=MAX(High,N), Lower=MIN(Low,N)	N=20	Breakout signal generation
-RSI	RSI = 100 - 100/(1 + RS), RS = AvgGain/AvgLoss	N=14	Overbought/oversold filter
-Volume MA	VMA = SMA(Volume, 20)	N=20	Volume confirmation filter
-Bollinger Bands	BB = SMA(N) +/- k*StdDev(N)	N=20, k=2	Volatility context, regime detection
-
-3.2 Signal Composite Scoring
-Each potential trade is scored on a 0-5 scale. Only trades scoring 4 or 5 are executed:
-    • Breakout above Donchian Upper (mandatory): +2 points
-    • HTF Trend aligned: +1 point
-    • Volume > 1.5x average: +1 point
-    • RSI between 50-75 for longs (momentum not exhausted): +1 point
-    • Price above BB midline: Contextual confirmation, not scored
-Signal_Score = Breakout_Score + Trend_Score + Volume_Score + RSI_Score
-Execute if: Signal_Score >= 4
-
-3.3 Statistical Reasoning
-3.3.1 Edge Calculation
-The statistical expectancy of the strategy is computed as:
-Expectancy = (Win_Rate * Avg_Win) - (Loss_Rate * Avg_Loss)
-Example: (0.42 * 3.0R) - (0.58 * 1.0R) = 1.26R - 0.58R = +0.68R per trade
-A positive expectancy of 0.68R per trade means for every $1 risked, the system expects to return $0.68 in profit. At 10 trades/day with 1% risk per trade, this equates to approximately 6.8% expected monthly return before transaction costs.
-
-3.4 Key Performance Metrics
-Metric	Formula	Target Threshold	Description
-Sharpe Ratio	(E[R] - Rf) / StdDev(R) * sqrt(252)	> 1.5	Risk-adjusted return vs risk-free rate
-Sortino Ratio	(E[R] - Rf) / DownsideStdDev * sqrt(252)	> 2.0	Penalizes downside volatility only
-Max Drawdown	MAX[(Peak - Trough) / Peak]	< 15%	Largest peak-to-trough equity decline
-Calmar Ratio	Annualized Return / Max Drawdown	> 2.0	Return per unit of max drawdown
-Win Rate	Winning Trades / Total Trades	35-50%	Percentage of profitable trades
-Profit Factor	Gross Profit / Gross Loss	> 1.5	Ratio of profits to losses
-Expectancy (R)	(WR*AvgWin) - (LR*AvgLoss)	> 0.5R	Average expected return per trade
-Recovery Factor	Net Profit / Max Drawdown	> 3.0	Ability to recover from drawdowns
-
-3.5 Backtesting Methodology
-3.5.1 Data Requirements
-    • Minimum 3 years of OHLCV data on primary timeframe (15-min, 1H, 4H, daily)
-    • Tick data preferred for entry/exit slippage modeling
-    • Out-of-sample test period: minimum 6 months, not used during optimization
-    • Data sources: Binance historical data API, Alpaca Markets, Quandl, Polygon.io
-
-3.5.2 Backtesting Protocol
-    • All backtests run on point-in-time data (no look-ahead bias)
-    • Indicators computed using only data available at signal generation time (t-1 close)
-    • Transaction costs modeled: 0.10% maker/taker fee + 0.05% slippage assumption
-    • Overnight funding costs applied for positions held > 8 hours (forex/futures)
-    • Partial fills modeled probabilistically based on available liquidity at price level
-
-3.5.3 Walk-Forward Validation
-Walk-forward analysis guards against overfitting by repeatedly optimizing on in-sample data and testing on unseen out-of-sample data:
-Phase	Period	Purpose
-In-Sample Optimization	36 months rolling	Parameter selection (e.g., Donchian N, ATR multiplier)
-Out-of-Sample Test	6 months	Unbiased performance measurement
-Walk-Forward Step	3 months	Roll window forward, repeat
-Anchor Period	Full history	Validate long-term parameter stability
-Strategy is accepted only if the out-of-sample Sharpe Ratio >= 70% of the in-sample Sharpe Ratio across all walk-forward windows.
-
-3.6 Monte Carlo Simulation
-After backtesting, 10,000 Monte Carlo simulations are run by randomly reordering the sequence of historical trade returns. This produces a distribution of possible equity curves to estimate:
-    • 95th percentile maximum drawdown (worst-case scenario planning)
-    • Probability of reaching target return milestones
-    • Ruin probability (equity falling below 50% of starting capital)
-    • Required starting capital for target income at 1% risk per trade
-
-4. System Architecture
-
-4.1 High-Level System Design
-The system is organized as a pipeline of loosely coupled modules, each with a single responsibility. Communication between modules uses an internal message bus (Redis Streams or similar) to achieve decoupling and fault tolerance.
-
-SYSTEM ARCHITECTURE FLOW
-
-[Exchange API / Data Feed]
-         |
-    DATA INGESTION MODULE
-  (WebSocket + REST poller)
-         |
-   TIME-SERIES DATABASE
-    (TimescaleDB / kdb+)
-         |
-      SIGNAL ENGINE
-  (Indicator Computation + Scoring)
-         |
-  RISK MANAGEMENT ENGINE
-(Position Sizing + Limit Checks)
-         |
-     EXECUTION ENGINE
-  (Order Management + Routing)
-         |
-[Exchange Order Book]
-
-All modules write to: LOGGING & MONITORING + DATABASE LAYER
-
-4.2 Module Specifications
-4.2.1 Data Ingestion Module
-    • Connects to exchange WebSocket streams for real-time OHLCV, trade, and order book data
-    • Implements a REST polling fallback if WebSocket disconnects (< 5 second reconnect)
-    • Normalizes data from multiple exchanges into a unified internal data format (UDF)
-    • Detects and flags stale data (no update > 30 seconds) and raises ALERT_STALE_DATA event
-    • Writes all raw tick data to time-series database within 10ms of receipt
-    • Maintains a rolling in-memory OHLCV buffer of the last 200 candles per asset per timeframe for signal computation
-
-4.2.2 Signal Engine
-    • Subscribes to the OHLCV data stream; triggers on each new candle close
-    • Computes all technical indicators using vectorized NumPy operations
-    • Evaluates Signal_Score for all monitored assets in parallel (thread pool)
-    • Publishes SIGNAL_LONG or SIGNAL_SHORT events to the internal message bus
-    • Each signal event includes: asset, timeframe, score, entry price, stop_loss, TP1, TP2, ATR, timestamp
-    • Signal computation must complete within 500ms of candle close
-
-4.2.3 Risk Management Engine
-    • Subscribes to all SIGNAL_* events from the Signal Engine
-    • Validates signals against all risk rules before forwarding to Execution Engine
-    • Computes position size using the fixed fractional formula on current account equity
-    • Checks: max open positions, portfolio heat, daily loss limit, circuit breaker status
-    • Logs every approved and rejected signal with the rejection reason
-    • Emits RISK_APPROVED or RISK_REJECTED events; only approved events reach the Execution Engine
-
-4.2.4 Execution Engine
-    • Receives RISK_APPROVED events and submits orders to the exchange API
-    • Implements intelligent order routing: limit orders first, market order fallback after 15 seconds
-    • Tracks open orders with 1-second polling until filled, partially filled, or cancelled
-    • Places stop-loss and take-profit orders immediately upon fill confirmation
-    • Handles partial fills: adjusts stop-loss and TP quantities proportionally
-    • Implements retry logic with exponential backoff for API rate limit errors
-    • All order state transitions are logged with exchange-provided trade IDs
-
-4.2.5 Logging & Monitoring
-    • Structured JSON logging to both local files and centralized log aggregator (e.g., Elasticsearch)
-    • Every log entry includes: timestamp_utc, module, event_type, asset, severity, details_json
-    • Prometheus metrics exposed on /metrics endpoint: active_positions, daily_pnl, signal_count, order_latency_ms, api_errors
-    • Grafana dashboard for real-time P&L, drawdown, position exposure, and system health
-    • Alert triggers via PagerDuty / Telegram for: daily_loss > threshold, api_error_rate > 5%, system latency > 2s, position stuck > 30min
-
-4.2.6 Database Layer
-Database	Technology	Data Stored	Retention
-Time-Series	TimescaleDB or InfluxDB	OHLCV, tick data, order book snapshots	90 days hot, 5 years cold
-Relational	PostgreSQL	Trades, positions, account state, config	Indefinite
-Cache	Redis	Real-time signals, session state, rate limits	In-memory
-Blob Store	S3 / GCS	Backtesting results, Monte Carlo outputs, logs archive	5+ years
-
-4.3 API Integration Requirements
-Exchange	API Type	Authentication	Rate Limit
-Binance	REST + WebSocket	HMAC-SHA256 API Key	1200 req/min weight
-Coinbase Advanced	REST + WebSocket	JWT / API Key	10 req/sec
-Alpaca Markets	REST + WebSocket	API Key + Secret	200 req/min
-Interactive Brokers	TWS API / IB Gateway	Socket + Credentials	50 req/sec
-
-4.4 Cloud vs Local Deployment Comparison
-Factor	Cloud (AWS/GCP/Azure)	Local/Colocation
-Latency to Exchange	5-50ms (varies by region)	<1ms (same datacenter)
-Cost	$200-800/month for t3.xlarge + DB	$500-2000/month colocation
-Reliability	99.99% SLA with auto-failover	Requires manual redundancy
-Scalability	Instant vertical/horizontal scaling	Hardware constraint
-Security	Managed IAM, VPC, KMS	Physical control, custom security
-Maintenance	Managed services, auto-patching	Full responsibility
-Recommended For	Most use cases, rapid iteration	HFT scalping strategies only
-Recommendation: Deploy on AWS EC2 (c5.2xlarge) in the same region as the primary exchange matching engine. For Binance, use AWS Tokyo (ap-northeast-1). For US equities, use AWS US-East-1 (Virginia).
-
-5. Risk Management Framework
-
-5.1 Stop-Loss Logic
-All stop-loss orders are submitted as exchange-level stop-limit orders, not soft stops managed by the application. This ensures stops execute even if the application crashes.
-SL_Long  = Entry - (1.5 * ATR14)    [minimum 0.5% below entry]
-SL_Short = Entry + (1.5 * ATR14)    [minimum 0.5% above entry]
-    • Stop-loss orders use a limit offset of 0.1% to handle fast markets (stop triggers at price, executes at -0.1% of stop price)
-    • If exchange does not support stop-limit, the Execution Engine polls position P&L every 500ms and submits market order if stop threshold is breached
-    • Trailing stop activates after TP1 is hit: trails at 2.0 * ATR14 below highest close
-
-5.2 Take-Profit Logic
-TP1 = Entry + (3.0 * ATR14)   [close 50% of position]
-TP2 = Entry + (6.0 * ATR14)   [close remaining 50%]
-    • TP orders submitted as limit orders immediately upon fill confirmation
-    • If TP1 triggers: remaining stop-loss is moved to breakeven (Entry +/- 0.05% buffer for fees)
-    • If TP2 is not hit within the maximum hold time (24 hours for intraday), position is closed at market
-
-5.3 Volatility-Based Position Sizing
-Position sizing dynamically adjusts to current market volatility using ATR normalization:
-Base_Risk = Account_Equity * 0.01
-Volatility_Scalar = ATR_Baseline / ATR_Current
-Adjusted_Risk = Base_Risk * min(Volatility_Scalar, 1.5)
-Position_Size = Adjusted_Risk / Stop_Distance
-During high-volatility periods (ATR > 2x baseline), position size is automatically reduced to maintain consistent dollar risk. During low-volatility periods, a maximum scalar of 1.5x applies to prevent over-leveraging.
-
-5.4 Max Daily Loss Protection
-Daily_Loss_Limit = Account_Equity * 0.03   [3% maximum daily drawdown]
-    • Daily P&L is tracked in real-time; if realized + unrealized loss > 3% of opening equity, no new trades are opened
-    • Existing positions continue to be managed normally (stops and TPs remain active)
-    • Daily loss counter resets at 00:00 UTC
-    • If daily loss limit is hit 3 consecutive days, the system enters SUSPENSION mode requiring manual reset
-
-5.5 Circuit Breaker Rules
-Trigger Condition	Action	Reset Condition
-Daily loss > 3% equity	Halt new entries for remainder of day	Automatic at 00:00 UTC
-Weekly loss > 8% equity	Halt all trading for 7 days	Manual review + approval required
-API error rate > 10% in 5min	Halt new entries, alert ops team	Manual reset after investigation
-Slippage > 5x expected on any order	Halt, review execution path	Manual reset after review
-Equity drawdown > 15% from peak	Full system shutdown, all positions closed	Capital injection + manual restart
-5+ consecutive losses	Reduce position size by 50% for next 10 trades	Automatic after 10 trades
-
-5.6 Portfolio Diversification Rules
-    • Maximum 5 concurrent open positions across all assets
-    • Maximum 2 positions in the same asset class (e.g., 2 crypto, 2 forex, 1 equity)
-    • Correlation check: if two candidate assets have correlation > 0.75 (30-day rolling), only the higher-score signal is taken
-    • Maximum portfolio heat (sum of all individual position risks) = 5% of equity
-    • No position can represent > 30% of total portfolio heat
-
-6. Technical Stack Recommendations
-
-6.1 Programming Languages
-Language	Version	Use Case	Justification
-Python	3.11+	Signal engine, backtesting, ML models, orchestration	Ecosystem richness (pandas, NumPy, TA-Lib, scikit-learn)
-Rust	1.70+	Execution engine, order management, hot paths	Zero-cost abstractions, predictable latency, memory safety
-TypeScript	5.0+	Monitoring dashboard, admin UI, alert configuration	Type safety, React ecosystem for dashboards
-SQL	PostgreSQL 15	Trade records, configuration, reporting queries	ACID compliance, time-series extension via TimescaleDB
-
-6.2 Frameworks and Libraries
-Category	Library/Framework	Purpose
-Data Processing	pandas 2.0, NumPy 1.25, Polars	OHLCV manipulation, indicator computation
-Technical Analysis	TA-Lib, pandas-ta, custom implementations	Indicator computation library
-Backtesting	Backtrader, Vectorbt, custom framework	Strategy simulation and optimization
-ML / Statistics	scikit-learn, statsmodels, scipy	Statistical tests, regime detection, ML signals
-Async Runtime	asyncio (Python), Tokio (Rust)	Concurrent WebSocket handling, non-blocking I/O
-Message Bus	Redis Streams 7.0+	Inter-module communication, event sourcing
-API Clients	aiohttp, ccxt (crypto), alpaca-py	Exchange API abstraction layer
-Monitoring	Prometheus-client, Grafana, OpenTelemetry	Metrics, dashboards, distributed tracing
-Testing	pytest, hypothesis, locust	Unit, property-based, and load testing
-Infrastructure	Terraform, Docker, Kubernetes	Cloud provisioning, containerization
-
-6.3 Infrastructure Setup
-    • All services containerized using Docker; orchestrated with Kubernetes (EKS on AWS or self-managed)
-    • Separate pods for: Data Ingestion, Signal Engine, Risk Engine, Execution Engine, Database, Monitoring
-    • Horizontal Pod Autoscaler configured for Signal Engine (scale with asset count)
-    • VPC with private subnets; all exchange API calls route through NAT Gateway with fixed IP (whitelisted at exchange)
-    • Secrets (API keys) stored in AWS Secrets Manager or HashiCorp Vault; never in environment variables or code
-    • All infrastructure defined as code (Terraform); no manual console configuration
-
-7. Execution & Order Handling
-
-7.1 Order Type Strategy
-Order Type	When Used	Advantage	Risk
-Limit Order (Primary)	All entries and exits in normal conditions	No slippage, maker fee (lower)	May not fill if price moves away
-Market Order (Fallback)	Stop-loss execution, limit not filled after 15s	Guaranteed fill	Slippage in thin markets
-Stop-Limit	Exchange-side stop-loss placement	Price protection with certainty	May not fill in fast gaps
-OCO (One-Cancels-Other)	Combined TP + SL after entry	Atomic order management	Not supported on all exchanges
-
-7.2 Slippage Handling
-Slippage is modeled and measured at every order. Expected slippage is estimated based on:
-Expected_Slippage = Spread/2 + (Order_Size / Avg_Daily_Volume) * Impact_Factor
-    • Impact_Factor = 0.1 for liquid large-caps (BTC, ETH), 0.3 for mid-caps
-    • Any order where actual slippage exceeds 3x expected slippage triggers a SLIPPAGE_ALERT
-    • Five consecutive SLIPPAGE_ALERT events trigger the circuit breaker (see Section 5.5)
-    • Entries are not executed if the bid-ask spread is > 2x the historical average spread
-
-7.3 Fee Optimization
-    • All entry and exit orders are submitted as limit orders to qualify for maker (lower) fees
-    • Track cumulative fee spend daily; log fee_to_pnl_ratio = daily_fees / gross_profit
-    • If fee_to_pnl_ratio > 0.3 (fees consuming > 30% of gross profit), signal frequency is reviewed
-    • Fee tiers are tracked per exchange; API keys with higher volume tiers are preferred
-
-7.4 Order Book Interaction Logic
-    • For limit entry orders: place at best bid (long) or best ask (short) at signal confirmation
-    • If not filled within 15 seconds, reprice to match the current best bid/ask once
-    • If still not filled after 30 seconds total, cancel and wait for the next signal (do not chase)
-    • Minimum order size enforced per exchange (e.g., 0.001 BTC minimum on Binance)
-    • Maximum single-order size capped at 1% of 24-hour exchange volume to avoid market impact
-
-8. Backtesting & Simulation Plan
-
-8.1 Historical Data Requirements
-Asset Class	Minimum History	Preferred History	Resolution	Source
-Cryptocurrency	3 years	5+ years	1-minute OHLCV	Binance API, CryptoDataDownload
-Forex	5 years	10+ years	5-minute OHLCV	Dukascopy, FXCM historical
-US Equities	5 years	10+ years	1-minute OHLCV	Alpaca, Polygon.io, IEX Cloud
-Futures	5 years	10+ years	1-minute OHLCV	Quandl, Norgate Data
-
-8.2 Data Cleaning Methods
-    • Remove duplicate timestamps; keep the first occurrence
-    • Forward-fill missing candles (gaps < 5 minutes); mark gaps > 5 minutes as market-closed
-    • Detect and remove obvious data errors: OHLC where High < Low, Close outside [Low, High]
-    • Adjust for splits and dividends for equities (use adjusted close prices)
-    • Remove pre-market and post-market data for equities unless strategy is designed for extended hours
-    • Normalize all timestamps to UTC; account for daylight saving time transitions in forex data
-    • Apply minimum volume filter: remove candles where volume = 0 outside known market closures
-
-8.3 Monte Carlo Simulation Protocol
-    • Generate 10,000 simulations by randomly resampling the empirical trade return distribution
-    • Each simulation preserves the trade frequency but randomizes the return sequence
-    • Compute for each simulation: total return, max drawdown, Sharpe ratio, time to recover from drawdown
-    • Report: median outcome, 5th percentile (bearish case), 95th percentile (bullish case)
-    • Compute ruin probability: fraction of simulations where equity falls below 50% of start
-    • Required: ruin probability < 2% for strategy to be approved for live deployment
-
-8.4 Performance Benchmarking
-    • Compare strategy Sharpe ratio against: Buy-and-Hold benchmark, 60/40 portfolio, S&P 500
-    • Report performance attribution: alpha vs benchmark, beta, information ratio
-    • Run performance breakdown by: month, day-of-week, market session (Asia/Europe/US), volatility regime
-    • Identify performance cliff (conditions under which the strategy stops working); document as deployment constraint
-
-9. Deployment & Maintenance
-
-9.1 CI/CD Pipeline
-    • Version control: Git with mandatory feature branches and pull request reviews
-    • All strategy parameter changes require: code review + backtest results + sign-off from quant lead
-    • CI pipeline (GitHub Actions / GitLab CI): lint, unit tests, integration tests must pass before merge
-    • Deployment pipeline: Build Docker image → push to ECR → deploy to staging → run smoke tests → promote to production
-    • Blue/green deployment: new version deployed alongside old; traffic switched only after health checks pass
-    • Automated rollback: if P&L degrades > 1% vs previous day within 2 hours of deployment, auto-rollback
-
-9.2 Monitoring Dashboards
-Dashboard	Key Metrics	Update Frequency
-Trading Performance	Daily P&L, cumulative return, drawdown, open positions, win rate	Real-time (1s)
-System Health	CPU, memory, latency, error rates, API quota usage	30-second refresh
-Risk Monitor	Portfolio heat, daily loss %, position sizes, correlation matrix	Real-time (5s)
-Execution Quality	Slippage per order, fill rate, fee spend, order book depth	Real-time (1s)
-
-9.3 Alert Systems
-Alert	Severity	Channel	Response SLA
-Daily loss > 2%	WARNING	Telegram	Review within 1 hour
-Daily loss > 3% (circuit breaker)	CRITICAL	PagerDuty + Telegram	Immediate response
-API error rate > 5%	CRITICAL	PagerDuty	Immediate response
-Position stuck > 30 min	WARNING	Telegram	Review within 15 min
-System latency > 2000ms	WARNING	Telegram	Review within 30 min
-Exchange WebSocket disconnect	INFO	Telegram	Auto-reconnect, alert if > 60s
-Weekly drawdown > 5%	CRITICAL	PagerDuty + Email	Trading review meeting
-
-9.4 Failover Mechanisms
-    • Primary and secondary database replicas with automatic failover (< 30 second RTO)
-    • Multi-AZ deployment: application pods distributed across 2+ availability zones
-    • Exchange API fallback: if primary exchange API fails, route to backup exchange for supported pairs
-    • Position reconciliation on startup: system reads open positions from exchange API, not local DB, on every restart
-    • Dead man's switch: if no heartbeat from main process for > 60 seconds, watchdog process closes all positions via emergency API call
-
-9.5 Security Considerations
-    • API keys stored exclusively in secrets manager; rotated every 90 days
-    • IP whitelisting enforced at exchange level for all API keys
-    • All API keys are read-restricted: withdrawal permissions disabled on all trading API keys
-    • Principle of least privilege: each module has only the API permissions required for its function
-    • Audit logs for all configuration changes, position changes, and risk parameter updates
-    • All inter-service communication encrypted with TLS 1.3; no plain-text internal APIs
-    • Security scanning: SAST/DAST in CI pipeline; container image scanning with Trivy
-
-10. Regulatory & Compliance Considerations
-
-10.1 Jurisdictional Considerations
-Jurisdiction	Key Regulations	Requirements for Bot Trading
-United States	SEC, CFTC, FINRA oversight	Broker registration, wash sale rules, pattern day trader rules (PDT) for equities < $25K
-European Union	MiFID II, ESMA guidelines	Algorithmic trading registration, annual reporting if trading > threshold volumes
-United Kingdom	FCA oversight	System testing requirements, kill switch mandate for algos
-Crypto (Global)	Varies by jurisdiction	KYC/AML at exchange level; some jurisdictions require licensing for algorithmic crypto trading
-
-
-10.2 Exchange API Usage Policies
-    • All trading activity must comply with exchange Terms of Service; wash trading (self-dealing) is strictly prohibited
-    • Rate limits must be respected at all times; implement local rate limiting to stay below exchange thresholds
-    • Market manipulation (spoofing, layering, front-running) is illegal and prohibited regardless of technical capability
-    • Data redistribution: historical and real-time market data from exchanges may not be redistributed without licensing
-
-10.3 Risk Disclosures
-    • Algorithmic trading carries significant financial risk; past backtest performance does not guarantee future results
-    • System failure, data errors, or adverse market conditions can cause losses exceeding the configured risk limits
-    • All operators of this system must acknowledge and accept these risks in writing before deployment
-    • The system includes circuit breakers but cannot prevent all losses in extreme market events (flash crashes, exchange insolvencies)
-
-11. Scalability Plan
-
-11.1 Multi-Asset Expansion
-The system is designed for horizontal scaling. Adding new assets requires:
-    • Register asset in the asset_configuration table with exchange, timeframe, and risk parameters
-    • Confirm minimum liquidity threshold: average 24H volume > $5M for crypto, $50M for equities
-    • Run 6-month backtest on new asset; require Sharpe > 1.0 and max drawdown < 15% before enabling live
-    • Signal Engine automatically picks up new assets on next restart (configuration-driven, no code changes)
-    • Scale Signal Engine pod resources proportionally to asset count (approximately linear compute cost)
-
-11.2 Multi-Strategy Portfolio Management
-At scale, the system can run multiple concurrent strategies. Each strategy is assigned a capital allocation and operates within its allocation:
-Strategy Layer	Allocation %	Description
-Momentum Breakout (Primary)	50%	Core strategy as documented in this specification
-Mean Reversion (Secondary)	25%	Counter-cyclical strategy; uncorrelated to momentum
-Grid Trading (Tertiary)	15%	Generates consistent income in ranging markets
-Cash Reserve	10%	Emergency liquidity buffer; not deployed
-    • Each strategy runs in an isolated process with its own risk limits (no cross-strategy position sharing)
-    • Portfolio-level risk manager enforces aggregate exposure limits across all strategies
-    • Strategy correlation is monitored monthly; if two strategies have > 0.8 equity curve correlation, one is paused
-
-11.3 Capital Scaling Model
-As AUM grows, market impact becomes a binding constraint. The following scaling model defines when to expand the asset universe or reduce position sizes:
-Max_Position_Size = 0.01 * Avg_Daily_Volume   [1% of ADV cap]
-AUM Range	Asset Universe	Risk Per Trade	Max Concurrent Positions
-$0 - $100K	5-10 assets	1.0%	5
-$100K - $500K	10-20 assets	0.75%	8
-$500K - $2M	20-40 assets	0.5%	12
-$2M - $10M	50+ assets, multiple strategies	0.25%	20
-$10M+	Institutional liquidity required; review strategy viability	TBD	TBD
-As risk per trade decreases with AUM growth, the absolute dollar return per unit of risk remains consistent. The strategy's edge must be periodically re-validated as capital scaling changes execution dynamics.
-
-
-END OF TECHNICAL SPECIFICATION
-This document is confidential and intended solely for the development team and authorized stakeholders.
-Automated Trading Bot — Technical Architecture Specification v1.0 — February 2026
+# XAU/USD Gold Bot — System Specification
+**Version:** v3.0  
+**Status:** LOCKED — do not modify  
+**Date:** March 2026  
+**Authority:** This file supersedes all previous versions (v2.1, v2.3)
+
+---
+
+## Table of Contents
+
+1. [System Overview](#1-system-overview)
+2. [Module Pipeline & Responsibilities](#2-module-pipeline--responsibilities)
+3. [Contract Schemas](#3-contract-schemas)
+4. [Macro Bias Engine](#4-macro-bias-engine)
+5. [Volatility Regime Engine](#5-volatility-regime-engine)
+6. [Strategy Dispatcher](#6-strategy-dispatcher)
+7. [Swing Strategy — TSMOM Multi-Horizon](#7-swing-strategy--tsmom-multi-horizon)
+8. [ORB Strategy — Opening Range Breakout](#8-orb-strategy--opening-range-breakout)
+9. [News Breakout Strategy](#9-news-breakout-strategy)
+10. [Scalping Strategy — Optional](#10-scalping-strategy--optional)
+11. [Risk Engine](#11-risk-engine)
+12. [Portfolio Coordinator](#12-portfolio-coordinator)
+13. [Execution Quality Gate](#13-execution-quality-gate)
+14. [Backtesting & Validation](#14-backtesting--validation)
+15. [Monitoring & Alerting](#15-monitoring--alerting)
+16. [Implementation Roadmap — Trae Stages](#16-implementation-roadmap--trae-stages)
+17. [Numeric Threshold Appendix](#17-numeric-threshold-appendix)
+
+---
+
+## 1. System Overview
+
+### 1.1 Problem Statement
+
+Public gold bots fail via five recurring patterns:
+
+| Failure | Evidence | Root Cause |
+|---|---|---|
+| Tail Risk | golduxe: 81.2% win rate, 69.3% DD | RR < 0.5; no loss cap |
+| Collapsed RR | Gold Bot XAU-USD: RR = 0.19 | Small fixed TP, runaway SL |
+| Overfitting | CITY GOLD HUNTER: PF 6.02 on 3-day sample | No walk-forward validation |
+| News Blindness | Multiple blowups at 13:30 UTC Fridays | No event detection |
+| Fixed Sizing | 2× loss on high-vol days | No volatility adjustment |
+
+### 1.2 Design Objectives
+
+| Metric | Target | Hard Reject Below |
+|---|---|---|
+| Sharpe Ratio | > 1.5 | < 0.8 |
+| Max Drawdown | < 15% | > 25% |
+| Profit Factor | > 1.5 | < 1.2 |
+| Expectancy | > 0.5R | ≤ 0R |
+| Monte Carlo ROR | < 2% | > 5% |
+| OOS / IS Sharpe | ≥ 70% | < 50% |
+
+---
+
+## 2. Module Pipeline & Responsibilities
+
+### 2.1 Pipeline Order
+
+```
+Data Ingestion
+  → Macro Bias Engine
+    → Volatility Regime Engine
+      → Strategy Dispatcher
+        → Strategy Engines (Swing, ORB, News, Scalp)
+          → Risk Engine
+            → Portfolio Coordinator
+              → Execution Quality Gate
+                → Execution Engine
+                  → Monitoring & Audit
+```
+
+### 2.2 Module Responsibility Charter
+
+| Module | Single Responsibility | Output | Must NOT Do |
+|---|---|---|---|
+| Data Ingestion | Normalise OHLCV; detect gaps; maintain buffers | OHLCV events per timeframe | Strategy logic, risk logic |
+| Macro Bias Engine | Classify gold macro environment | `MACRO_STATE` + confidence [0–1] | Trade directly; be a signal source |
+| Volatility Regime Engine | Classify volatility state with hysteresis | `REGIME_STATE` + `risk_scalar` | Dispatch strategy permissions |
+| Strategy Dispatcher | Map (regime, macro, time, session) → permissions | `DispatcherPermissions` object | Emit orders or signals |
+| Strategy Engines | Detect setup; score it; package intent | `SignalIntent` object | Size position; check risk; execute |
+| Risk Engine | Transform intent into sized, stopped decision | `RiskDecision` object | Execute orders; manage portfolio |
+| Portfolio Coordinator | Resolve conflicts; cap heat; weight quality | Updated `RiskDecision` or rejection | Generate signals; execute |
+| Execution Quality Gate | Check real-world execution feasibility | `ExecutionDecision` object | Trade; size; generate signals |
+| Execution Engine | Submit and manage orders | Order state transitions + audit log | Generate signals; size; risk-check |
+| Monitoring & Audit | Observe system health; emit alerts | Metrics + alert events | Modify system behaviour |
+
+---
+
+## 3. Contract Schemas
+
+All inter-module communication uses exactly three normalised contracts.  
+No module may invent its own data format for downstream consumption.
+
+### 3.1 SignalIntent  *(Strategy Engine → Risk Engine)*
+
+| Field | Type | Allowed Values | Validation Rule |
+|---|---|---|---|
+| `strategy_name` | str | `"SWING"`, `"ORB"`, `"NEWS"`, `"SCALP"` | Must be one of four allowed values |
+| `direction` | int | `+1` (long), `-1` (short) | Must be exactly +1 or -1 |
+| `score` | int | 0 – 5 | Must be ≥ 4 to pass to Risk Engine |
+| `entry_type` | str | `"MARKET"`, `"LIMIT"`, `"STOP_LIMIT"` | Must be one of three allowed values |
+| `entry_trigger` | float | Any positive float | Must be > 0 |
+| `sl_distance` | float | Any positive float | Must be > 0; in price units |
+| `tp_plan.tp1_distance` | float | Any positive float | Must be > 0 |
+| `tp_plan.tp1_size_pct` | float | 0.0 – 1.0 | Fraction closed at TP1 |
+| `tp_plan.tp2_distance` | float \| null | Positive float or null | null = trail only after TP1 |
+| `tp_plan.trail_atr_mult` | float | > 0 | Trailing stop = Highest_Close − N × ATR |
+| `timeout_plan.max_bars` | int | > 0 | Hard exit after N bars |
+| `timeout_plan.mandatory_exit_utc` | str \| null | `"HH:MM"` or null | Time-based mandatory exit |
+| `regime_context` | REGIME_STATE | See Section 5 | Must match current regime |
+| `macro_context` | MACRO_STATE | See Section 4 | Must match current macro state |
+| `execution_constraints.max_spread_bp` | float | > 0 | Per-strategy values in Section 17.5/17.6 |
+| `execution_constraints.max_slippage_bp` | float | > 0 | Per-strategy values |
+| `execution_constraints.min_quote_fresh_ms` | int | > 0 | Per-strategy values |
+
+### 3.2 RiskDecision  *(Risk Engine → Portfolio Coordinator → Execution Quality Gate)*
+
+| Field | Type | Description |
+|---|---|---|
+| `approved` | bool | Whether the trade may proceed |
+| `rejection_reason` | str \| null | Populated if `approved = false` |
+| `position_size` | float | Lots, after all modifiers applied |
+| `risk_fraction_used` | float | Actual `r` applied after vol scalar |
+| `stop_price` | float | Absolute stop-loss price |
+| `take_profit_plan` | tp_plan | Forwarded from SignalIntent |
+| `circuit_breaker_state.daily_loss_pct` | float | Current day realised + unrealised P&L % |
+| `circuit_breaker_state.weekly_loss_pct` | float | Current week P&L % |
+| `circuit_breaker_state.consecutive_losses` | int | Count of sequential losing trades |
+| `circuit_breaker_state.breaker_active` | bool | True if any CB is currently triggered |
+| `portfolio_heat_snapshot.current_heat_pct` | float | Sum of all open position risks |
+| `portfolio_heat_snapshot.heat_remaining` | float | `5.0% − current_heat_pct` |
+| `portfolio_heat_snapshot.open_positions` | int | Count of currently open positions |
+| `strategy_viability.rolling_er` | float | Expectancy R on last 30 trades |
+| `strategy_viability.viable` | bool | False if rolling ER ≤ 0 |
+
+### 3.3 ExecutionDecision  *(Execution Quality Gate → Execution Engine)*
+
+| Field | Type | Description |
+|---|---|---|
+| `allowed_state` | str | `"ALLOWED"`, `"DEGRADED"`, `"BLOCKED"` |
+| `blocked_reason` | str \| null | Populated if state is BLOCKED |
+| `spread_snapshot` | float | Live spread in basis points |
+| `spread_vs_median` | float | Ratio: live spread / rolling 100-tick median |
+| `quote_freshness_ms` | int | Age of last price quote in milliseconds |
+| `expected_slippage_bp` | float | Pre-fill slippage estimate |
+| `actual_slippage_bp` | float \| null | Populated post-execution |
+| `routing_mode` | str | `"LIMIT"` or `"MARKET_FALLBACK"` |
+| `order_intent_id` | str | UUID linking back to originating SignalIntent |
+| `degraded_action` | str \| null | `"REDUCE_SIZE_50PCT"` when DEGRADED |
+
+---
+
+## 4. Macro Bias Engine
+
+### 4.1 State Enum
+
+| State | Meaning |
+|---|---|
+| `MACRO_BULL_GOLD` | USD falling + real yields falling → gold bullish |
+| `MACRO_BEAR_GOLD` | USD rising + real yields rising → gold bearish |
+| `MACRO_NEUTRAL` | Neither threshold crossed |
+| `MACRO_EVENT_RISK` | High-impact event imminent or active; or risk-off spike |
+
+### 4.2 Input Proxies
+
+| Input | Proxy | Fallback |
+|---|---|---|
+| USD impulse | 5-day ROC of USDX/DXY daily close | Set `usd_impulse = 0` (neutral) |
+| Real-yield impulse | 5-day ROC of US10Y or TLT (inverted) | Set `yield_impulse = 0` |
+| Calendar severity | Calendar service: NONE / LOW / HIGH / CRITICAL | Derive from shock candle |
+| Risk-off override | VIX proxy > 25; fallback: `ATR_daily > 2.0 × ATR_baseline_252d` | ATR-based always available |
+
+### 4.3 Classification Logic
+
+```
+usd_impulse   = (USDX_close - USDX_close[5]) / USDX_close[5]
+yield_impulse = (TIPS_close  - TIPS_close[5]) / TIPS_close[5]
+
+if cal_severity in [HIGH, CRITICAL] OR risk_off:
+    macro_state = MACRO_EVENT_RISK
+elif usd_impulse < -0.005 AND yield_impulse < -0.003:
+    macro_state = MACRO_BULL_GOLD
+elif usd_impulse > +0.005 AND yield_impulse > +0.003:
+    macro_state = MACRO_BEAR_GOLD
+else:
+    macro_state = MACRO_NEUTRAL
+```
+
+### 4.4 Effect on Strategy Permissions
+
+| Macro State | Swing | ORB | News | Scalping | Sizing Modifier |
+|---|---|---|---|---|---|
+| MACRO_BULL_GOLD | Long bias | Long only | Long preferred | Long only | × 1.0 |
+| MACRO_BEAR_GOLD | Short bias | Short only | Short preferred | Short only | × 1.0 |
+| MACRO_NEUTRAL | Both | Both | Both | Both | × 1.0 |
+| MACRO_EVENT_RISK | Reduce 50%; no new entries | BLOCKED | Whitelist only | BLOCKED | × 0.5 |
+
+---
+
+## 5. Volatility Regime Engine
+
+### 5.1 State Enum
+
+| State | ATR Ratio Condition | risk_scalar |
+|---|---|---|
+| `LOW_VOL` | ratio < 0.85 | 1.00 |
+| `MID_VOL` | 0.85 ≤ ratio ≤ 1.25 | 0.80 |
+| `HIGH_VOL` | ratio > 1.25 | 0.50 |
+| `SHOCK_EVENT` | TR_current > 2.0 × ATR_fast | 0.00 |
+
+Where: `ratio = ATR_fast(14, M5) / ATR_slow(200, M5)`
+
+### 5.2 Hysteresis Rule
+
+Regime state changes only after **3 consecutive confirming bars**.  
+`SHOCK_EVENT` overrides immediately — no hysteresis required for shocks.
+
+### 5.3 Shock Recovery Protocol
+
+```
+Cooldown: 12 bars = 60 minutes after shock
+
+if bars_since_shock >= 12 AND ATR_fast <= 1.25 × ATR_slow:
+    regime = MID_VOL   # never jump directly to LOW_VOL
+    risk_scalar = 0.80
+elif bars_since_shock >= 12:
+    regime = HIGH_VOL
+    risk_scalar = 0.50
+```
+
+---
+
+## 6. Strategy Dispatcher
+
+### 6.1 Output Schema
+
+See `DispatcherPermissions` in Section 3 / `docs/event_contracts.md`.
+
+### 6.2 Priority Table
+
+| Priority | Condition | Scalp | ORB | News | Swing | Direction |
+|---|---|---|---|---|---|---|
+| 1 | SHOCK_EVENT or approved news active | ✗ | ✗ | ✓ | monitor | From macro |
+| 2 | Blackout (±10 min around HIGH/CRITICAL news) | ✗ | ✗ | ✗ | monitor | From macro |
+| 3 | London open 07:00–08:00 UTC; no shock; no blackout | ✗ | ✓ | standby | ✓ | From swing_dir |
+| 4 | LOW_VOL + liquid session (07:00–17:00); no event | ✓ | ✗ | ✗ | ✓ | From swing_dir |
+| 5 | Any other time | ✗ | ✗ | ✗ | ✓ | From swing_dir |
+
+### 6.3 Direction Constraint
+
+```
+swing_dir = sign(confidence_score)  # from multi-horizon TSMOM
+
+if macro_state == MACRO_BULL_GOLD:  direction_constraint = max(swing_dir, 0) or +1
+if macro_state == MACRO_BEAR_GOLD:  direction_constraint = min(swing_dir, 0) or -1
+if macro_state == MACRO_NEUTRAL:    direction_constraint = swing_dir
+if macro_state == MACRO_EVENT_RISK: direction_constraint = 0  # news only, any dir
+```
+
+---
+
+## 7. Swing Strategy — TSMOM Multi-Horizon
+
+### 7.1 Signal Computation  *(Monday 00:05 UTC)*
+
+```
+mom_1m  = (Close[t] - Close[t-21])  / realized_vol_21d
+mom_3m  = (Close[t] - Close[t-63])  / realized_vol_63d
+mom_6m  = (Close[t] - Close[t-126]) / realized_vol_126d
+mom_12m = (Close[t] - Close[t-252]) / realized_vol_252d
+
+# Inverse-volatility weighted score
+confidence = 0.10×sign(mom_1m) + 0.20×sign(mom_3m) + 0.30×sign(mom_6m) + 0.40×sign(mom_12m)
+
+if   confidence >  +0.30:  swing_dir = +1
+elif confidence <  -0.30:  swing_dir = -1
+else:                      swing_dir =  0
+```
+
+### 7.2 Turning-Point Brake
+
+Activates when **all four** conditions hold:
+
+```
+brake_cond_1 = swing_dir != 0
+brake_cond_2 = sign(mom_1m) != swing_dir
+brake_cond_3 = mom_1m < -0.50 × StdDev(mom_1m_series, 52w)
+brake_cond_4 = ATR_fast / ATR_slow > 1.15
+
+if ALL four: risk_scalar_override = 0.40
+```
+
+### 7.3 Position Sizing
+
+```
+base_lots = (Equity × 0.010) / (ATR(20,Daily) × contract_oz)
+lots = base_lots × regime_risk_scalar × macro_risk_modifier × brake_modifier
+lots = min(lots, 1.5 × base_lots)
+```
+
+### 7.4 Exits
+
+- **Rebalance:** every Monday 00:05 UTC; close and reverse if `sign(confidence)` flips
+- **Chandelier stop:** `Highest_Close(since_entry) − 3.0 × ATR(20, Daily)`
+- **Neutral hesitation:** if confidence crosses 0 but `|confidence| < 0.30`, reduce 50% and wait one week
+
+---
+
+## 8. ORB Strategy — Opening Range Breakout
+
+### 8.1 Opening Range
+
+- **Window:** 07:00–08:00 UTC (London open)
+- `OR_High = MAX(High)` over window
+- `OR_Low  = MIN(Low)`  over window
+
+### 8.2 Quality Band
+
+```
+lower_bound = max(0.25 × ATR_daily_14, 0.70 × OR_median_20)
+upper_bound = min(1.80 × ATR_daily_14, 2.00 × OR_median_20)
+orb_quality_ok = lower_bound ≤ OR_width ≤ upper_bound
+```
+
+If `orb_quality_ok = false` → `NO_TRADE`
+
+### 8.3 Adaptive Buffer
+
+```
+or_quality_ratio = OR_width / OR_median_20
+buf_base  = 0.15 × ATR(14, M15)
+buf_final = buf_base × (1.0 + 0.30 × (1.0 - or_quality_ratio))
+buf_final = clamp(buf_final, 0.10 × ATR_14_M15, 0.25 × ATR_14_M15)
+```
+
+### 8.4 Entry Conditions
+
+```
+Long:  Close(M15) > OR_High + buf_final
+       AND Volume > 1.20 × VMA(20, M15)
+       AND direction_constraint >= 0
+       AND NOT blackout_active
+
+Short: Close(M15) < OR_Low - buf_final
+       AND Volume > 1.20 × VMA(20, M15)
+       AND direction_constraint <= 0
+
+HARD RULE: one trade per session; no re-entry after stop-out
+```
+
+### 8.5 Trade Management
+
+| Parameter | Value |
+|---|---|
+| Stop-Loss | `OR_Low − buf_final`; cap at `1.50 × ATR(14, M15)` |
+| TP1 (50%) | `Entry + 1.0 × SL_distance`; on hit → SL to breakeven |
+| Trailing (50%) | `Highest_Close − 2.0 × ATR(14, M15)` per M15 bar |
+| Mandatory exit | 20:45 UTC (19:30 UTC Fridays) |
+| Shock abort | `TR(M15) > 2.0 × ATR(14)` in last bar before entry → skip |
+
+---
+
+## 9. News Breakout Strategy
+
+### 9.1 Event Whitelist
+
+| Tier | Events | Entry Window |
+|---|---|---|
+| T1 — Always trade | NFP (Fri 13:30), FOMC Rate Decision, FOMC Press Conf | 3 min post-release |
+| T2 — Trade if spread OK | US CPI (Wed 13:30), US GDP (Advance) | 2 min post-release |
+| T3 — Trade if HIGH_VOL | Durable Goods Orders (Thu 13:30) | 1 min post-release |
+| BLOCKED | All non-whitelisted events | Never |
+
+### 9.2 Pre-Trade Gates  *(all must pass)*
+
+```
+spread_gate:   spread_live_bp ≤ min(3.0, 2.0 × spread_median_100)
+freshness:     quote_age_ms < 500
+slippage:      expected_slippage_bp < 5.0
+session:       time_utc in [07:00, 21:00]
+```
+
+### 9.3 Entry Logic
+
+```
+Pre-news range: 5 M5 bars before event
+buf_news = 0.20 × ATR(14, M5)
+
+Long:  Close(M5) > pre_news_high + buf_news  AND all_gates_pass
+Short: Close(M5) < pre_news_low  - buf_news  AND all_gates_pass
+
+Expiry: T1 = 3 min, T2 = 2 min, T3 = 1 min after event time
+Never enter if entry > 1.5 × SL_distance from trigger level
+```
+
+### 9.4 Trade Management
+
+| Parameter | Value |
+|---|---|
+| Stop-Loss | Opposite side of pre-news range minus/plus buf_news |
+| Take-Profit | `Entry ± 2.0 × SL_distance` (R:R = 2.0 minimum) |
+| Max per day | 2 News Breakout trades |
+
+---
+
+## 10. Scalping Strategy — Optional
+
+**Priority:** 4th — launch only after Stages 01–11 fully validated.
+
+### 10.1 Activation Gates  *(all must pass)*
+
+```
+regime == LOW_VOL (strictly)
+macro != MACRO_EVENT_RISK
+NOT blackout_active
+spread_live_bp ≤ 2.0
+time_utc in [08:00, 17:00]
+```
+
+### 10.2 Signal Conditions (Long)
+
+```
+Close(M5) < BB_Lower(SMA_20, 2.0σ)
+RSI(14) < 30
+Close(M5) > EMA(200, M5)
+Volume > 1.10 × VMA(20, M5)
+|Close - EMA(200,M5)| < 2.50 × ATR(14,M5)
+
+Signal Score must be ≥ 4/5:
+  +2: BB breakout (mandatory)
+  +1: HTF trend aligned (EMA_20_4H direction matches)
+  +1: Volume > 1.50 × VMA(20)
+  +1: RSI in zone (< 30 long; > 70 short)
+```
+
+### 10.3 Trade Management
+
+| Parameter | Value |
+|---|---|
+| Stop-Loss | `Entry ± 1.0 × ATR(14, M5)` |
+| TP1 (50%) | `Entry ∓ 0.5 × ATR`; then SL to breakeven |
+| Trailing (50%) | `Highest_Close − 1.0 × ATR` per bar |
+| Time stop | 6 bars = 30 minutes |
+| Daily halt | 5 consecutive scalping losses → halt for remainder of day |
+
+---
+
+## 11. Risk Engine
+
+### 11.1 Universal Position Sizing
+
+```
+base_lots = (Equity × r) / (SL_distance × contract_oz_per_lot)
+lots = base_lots
+     × regime_risk_scalar          # Regime Engine: 0.0–1.0
+     × macro_risk_modifier          # 0.5 if MACRO_EVENT_RISK, else 1.0
+     × viability_modifier           # 0.5 if rolling_ER near 0; 0.0 if suspended
+     × quality_weight               # Portfolio Coordinator: 0.5–1.0
+lots = max(lots, broker_min_lot_size)
+```
+
+### 11.2 Circuit Breaker Table
+
+| Trigger | Condition | Action | Reset |
+|---|---|---|---|
+| Shock candle | `TR(M5) > 2.0 × ATR_fast` | SHOCK_EVENT; `risk_scalar = 0`; pause 12 bars | Auto per Section 5.3 |
+| Daily loss — soft | Scalp: `< −1.5%`; ORB: `< −2.0%` | Halt that strategy for rest of day | Auto at 00:00 UTC |
+| Daily loss — hard | Portfolio `< −3.0%` | Close ALL positions; halt all new entries | Auto at 00:00 UTC |
+| Weekly loss | Portfolio `< −8%` week-open | Full halt 7 days | Manual review |
+| 5 consecutive losses | Any strategy | Reduce that strategy size 50% for next 10 trades | Auto after 10 trades |
+| ER turns negative | `rolling_ER(30) ≤ 0` | `viability_modifier = 0.50`; alert ops | Manual + 30-trade window |
+| ER strongly negative | `rolling_ER(30) < −0.10` | `viability_modifier = 0.00`; suspend strategy | Manual review |
+| API error rate | > 10% in 5-minute window | Halt new entries; alert ops | Manual |
+| Peak drawdown | > 15% from equity peak | Full shutdown; close all positions | Manual + capital review |
+
+### 11.3 Strategy Viability Monitor
+
+```
+p          = count(wins) / 30      # last 30 closed trades
+b          = mean(win_R) / mean(|loss_R|)
+rolling_ER = p × b - (1 - p)
+rolling_PF = sum(gross_wins_R) / sum(|gross_loss_R|)
+
+viable = (rolling_ER > 0) AND (rolling_PF > 1.10)
+```
+
+---
+
+## 12. Portfolio Coordinator
+
+### 12.1 Hard Limits
+
+```
+max_portfolio_heat    = 5.0%    # sum of all open position risks
+max_single_position   = 30%     # no strategy > 30% of total heat
+max_open_positions    = 5
+net_exposure_cap      = 1.0     # |pos_swing + pos_orb + pos_scalp| in risk units
+net_exposure_floor    = 0.15    # if below, go flat (avoid churn)
+```
+
+### 12.2 Quality-Weighted Allocation
+
+```
+quality_weight = f(rolling_PF, rolling_ER, realized_slippage_deviation)
+quality_weight = clamp(quality_weight, 0.50, 1.00)
+```
+
+### 12.3 Risk Budget
+
+| Strategy | Budget | Risk/Trade |
+|---|---|---|
+| Swing TSMOM | 60% | ~1.0% vol-target |
+| ORB | 25% | 0.50% |
+| Scalping | 15% | 0.25% |
+| News Breakout | From ORB budget | 0.50% |
+
+---
+
+## 13. Execution Quality Gate
+
+### 13.1 State Machine
+
+```
+EXECUTION_BLOCKED   if: spread_ratio > 3.0
+                     OR  quote_age_ms > 1000
+                     OR  api_error_rate_5min >= 0.05
+                     OR  session outside liquid hours (07:00–20:00 UTC)
+
+EXECUTION_DEGRADED  if: NOT BLOCKED
+                     AND (spread_ratio > 1.80
+                          OR expected_slippage_bp > signal.max_slippage_bp)
+                     Action: REDUCE_SIZE_50PCT
+
+EXECUTION_ALLOWED   otherwise
+```
+
+### 13.2 Per-Strategy Constraints
+
+| Strategy | max_spread_bp | max_slippage_bp | min_quote_fresh_ms | Session |
+|---|---|---|---|---|
+| Swing | 10.0 | 15.0 | 2000 | None |
+| ORB | 3.0 | 5.0 | 500 | 07:00–20:00 UTC |
+| News T1/T2 | 3.0 / 2.5 | 5.0 | 500 | 07:00–21:00 UTC |
+| Scalping | 2.0 | 3.0 | 300 | 08:00–17:00 UTC |
+
+---
+
+## 14. Backtesting & Validation
+
+### 14.1 Walk-Forward Protocol
+
+| Phase | Window | Gate |
+|---|---|---|
+| In-Sample | 36 months rolling | Document chosen parameters |
+| Out-of-Sample | 6 months | OOS Sharpe ≥ 70% of IS Sharpe |
+| Step | 3-month roll | All windows must pass OOS gate |
+
+### 14.2 Transaction Cost Model
+
+```
+Total = Spread + Commission + Slippage + FundingCost
+Spread:     dynamic; 2× wider at opens and within 5 min of news
+Commission: 0.10% per side
+Slippage:   0.05% baseline + (order_lots / ADV_lots) × 0.10
+Funding:    Swing positions held > 8 hours → broker swap rate
+```
+
+### 14.3 Deployment Gate
+
+All of the following must pass before live capital is allocated:
+
+- [ ] Walk-forward OOS Sharpe ≥ 70% of IS Sharpe across all windows
+- [ ] Monte Carlo ruin probability < 2%
+- [ ] Max Drawdown < 15% in walk-forward
+- [ ] Profit Factor > 1.5 in walk-forward
+- [ ] 30+ consecutive paper trading days with Sharpe > 1.0
+- [ ] All circuit breakers tested against historical NFP and FOMC bars
+- [ ] All API keys: withdrawal permissions DISABLED; IP whitelist ACTIVE
+- [ ] Dead-man switch tested: closes all positions if heartbeat silent > 60s
+- [ ] All monitoring alerts tested end-to-end
+- [ ] Human risk review sign-off obtained
+
+---
+
+## 15. Monitoring & Alerting
+
+| Alert | Severity | Channel | SLA |
+|---|---|---|---|
+| Daily loss > 2% | WARNING | Telegram | 1 hour |
+| Daily loss > 3% (hard CB) | CRITICAL | PagerDuty + Telegram | Immediate |
+| Weekly drawdown > 5% | CRITICAL | PagerDuty + Email | Same day |
+| Peak drawdown > 15% | CRITICAL | PagerDuty | Immediate shutdown |
+| API error rate > 5% | CRITICAL | PagerDuty | Immediate |
+| rolling_ER turns negative | WARNING | Telegram | Review within 1 hour |
+| Strategy suspended | CRITICAL | PagerDuty | Immediate manual review |
+| Dead-man switch (no heartbeat > 60s) | CRITICAL | PagerDuty | Watchdog closes all positions |
+| Slippage > 3× expected | WARNING | Telegram | Review execution path |
+
+---
+
+## 16. Implementation Roadmap — Trae Stages
+
+| Stage | Goal | Gate |
+|---|---|---|
+| 00 | Contract freeze | All schemas explicit; zero code; no file outside allowed list |
+| 01 | Data ingestion | Clean data on 5+ years verified; mocked IO tests pass |
+| 02 | Regime + shock | All LOW/MID/HIGH/SHOCK transitions tested including hysteresis |
+| 03 | Macro + calendar | Explicit state output; no trading logic; fallback paths tested |
+| 04 | Dispatcher | Deterministic permissions; all edge cases covered |
+| 05 | Swing engine | Paper rebalance intent only; turning-point brake tested |
+| 06 | ORB engine | One trade/day; quality bands tested; no re-entry after stop |
+| 07 | News engine | Strict expiry; no-chase enforced; all tiers tested |
+| 08 | Scalping engine | Strictest gates validated; paper only; LOW_VOL gate enforced |
+| 09 | Risk engine | RiskDecision emitted only; all CBs fire on test inputs |
+| 10 | Portfolio coordinator | Reproducible state transitions; heat cap enforced |
+| 11 | Execution quality gate | BLOCKED/DEGRADED/ALLOWED state machine tested |
+| 12 | Paper execution | Paper fills only; 30-day paper run; full audit trail |
+| 13 | Monitoring & ops | All alerts fire in test; no secret leakage; dead-man switch tested |
+| 14 | Research harness | ROR < 2%; OOS Sharpe ≥ 70% IS; cost model applied |
+
+---
+
+## 17. Numeric Threshold Appendix
+
+All values below are **frozen defaults**. Any change requires a backtest comparison and human approval.
+
+### 17.1 Regime Engine
+
+| Parameter | Value |
+|---|---|
+| ATR_fast period | 14 bars M5 |
+| ATR_slow period | 200 bars M5 |
+| LOW_VOL upper bound | ratio < 0.85 |
+| HIGH_VOL lower bound | ratio > 1.25 |
+| Hysteresis confirmation | 3 consecutive bars |
+| Shock candle threshold | TR > 2.0 × ATR_fast |
+| Shock cooldown | 12 bars (60 min) |
+| LOW_VOL risk_scalar | 1.00 |
+| MID_VOL risk_scalar | 0.80 |
+| HIGH_VOL risk_scalar | 0.50 |
+| SHOCK risk_scalar | 0.00 |
+
+### 17.2 Macro Bias Engine
+
+| Parameter | Value |
+|---|---|
+| USD impulse window | 5-day ROC |
+| MACRO_BULL_GOLD threshold | USD ROC < −0.005 AND yield ROC < −0.003 |
+| MACRO_BEAR_GOLD threshold | USD ROC > +0.005 AND yield ROC > +0.003 |
+| Risk-off VIX threshold | > 25 |
+| Risk-off ATR fallback | ATR_daily > 2.0 × ATR_baseline_252d |
+| MACRO_EVENT_RISK sizing modifier | 0.50 |
+
+### 17.3 Swing TSMOM
+
+| Parameter | Value |
+|---|---|
+| Horizon weights | 1M=0.10, 3M=0.20, 6M=0.30, 12M=0.40 |
+| Bullish threshold | confidence > +0.30 |
+| Bearish threshold | confidence < −0.30 |
+| Neutral zone | −0.30 to +0.30 |
+| Turning-point brake: 1M threshold | `mom_1m < −0.50 × StdDev(mom_1m, 52w)` |
+| Turning-point brake: ATR threshold | ATR_fast/ATR_slow > 1.15 |
+| Turning-point brake size reduction | 0.40 (40% of normal) |
+| Rebalance | Every Monday 00:05 UTC |
+| Chandelier stop multiplier | 3.0 × ATR(20, Daily) |
+| Vol target sigma | 1.0% daily equity risk |
+| Max size cap | 1.5 × base_lots |
+
+### 17.4 ORB
+
+| Parameter | Value |
+|---|---|
+| Opening range window | 07:00–08:00 UTC |
+| Quality band lower | `max(0.25 × ATR_daily, 0.70 × OR_median_20)` |
+| Quality band upper | `min(1.80 × ATR_daily, 2.00 × OR_median_20)` |
+| Adaptive buf base | 0.15 × ATR(14, M15) |
+| Adaptive buf clamp | [0.10 × ATR, 0.25 × ATR] |
+| Volume confirmation | > 1.20 × VMA(20, M15) |
+| SL cap | 1.50 × ATR(14, M15) |
+| Trailing stop | 2.0 × ATR(14, M15) |
+| Mandatory exit | 20:45 UTC (19:30 UTC Fridays) |
+| Retest tolerance | 0.5 × buf_final (breakout-retest mode) |
+
+### 17.5 News Breakout
+
+| Parameter | Value |
+|---|---|
+| Pre-news range window | 5 M5 bars before event |
+| buf_news | 0.20 × ATR(14, M5) |
+| Max spread T1 | 3.0 bp |
+| Max spread T2 | 2.5 bp |
+| Max expected slippage | 5.0 bp |
+| Quote freshness limit | 500 ms |
+| T1 entry window | 3 min post-release |
+| T2 entry window | 2 min post-release |
+| T3 entry window | 1 min post-release |
+| TP target | 2.0 × SL_distance (R:R = 2.0) |
+| Max chase limit | 1.5 × SL_distance from trigger |
+| Max per day | 2 trades |
+
+### 17.6 Scalping
+
+| Parameter | Value |
+|---|---|
+| Regime gate | LOW_VOL strictly |
+| BB parameters | SMA(20), 2.0σ |
+| RSI period / levels | 14 / < 30 long; > 70 short |
+| EMA trend filter | EMA(200, M5) |
+| Volume confirmation | > 1.10 × VMA(20, M5) |
+| Trend-day filter | `|Close − EMA(200)| < 2.50 × ATR(14)` |
+| Max spread ceiling | 2.0 bp |
+| SL distance | 1.0 × ATR(14, M5) |
+| TP1 distance | 0.5 × ATR(14, M5) |
+| Trailing multiplier | 1.0 × ATR (post-TP1) |
+| Time stop | 6 bars = 30 min |
+| Daily consecutive loss halt | 5 losses → halt for rest of day |
+| Min viable win rate (ER > 0) | 63% at 0.65R avg win |
