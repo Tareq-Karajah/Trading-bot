@@ -1,0 +1,13 @@
+ccxt>=4.0
+pydantic>=2.0
+pydantic-settings
+redis>=5.0
+asyncpg
+sqlalchemy>=2.0
+aiohttp
+pandas>=2.0
+numpy
+pandas-ta
+prometheus-client
+structlog
+python-dotenv
