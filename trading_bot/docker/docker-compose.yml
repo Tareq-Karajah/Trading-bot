@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build:
+      context: ../../
+      dockerfile: trading_bot/docker/Dockerfile
+    container_name: trading-bot
+    depends_on:
+      - redis
+      - db
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/trading_bot
+      - REDIS_URL=redis://redis:6379/0
+      - DRY_RUN=True
+    env_file:
+      - ../.env.example
+    restart: unless-stopped
+    networks:
+      - trading-net
+
+  redis:
+    image: redis:7.0-alpine
+    container_name: trading-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: trading-db
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=trading_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - trading-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d trading_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  trading-net:
+    driver: bridge
+
+volumes:
+  postgres_data:

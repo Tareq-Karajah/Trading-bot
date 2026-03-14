@@ -1,0 +1,1 @@
+from trading_bot.dispatcher.engine import StrategyDispatcher, DispatcherPermissions

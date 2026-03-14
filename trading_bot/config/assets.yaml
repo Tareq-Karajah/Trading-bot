@@ -1,0 +1,13 @@
+# Asset Universe Configuration
+# Format:
+# symbols:
+#   - symbol: BTC/USDT
+#     exchange: binance
+#     timeframe: 15m
+#     asset_class: CRYPTO
+#   - symbol: ETH/USDT
+#     exchange: binance
+#     timeframe: 15m
+#     asset_class: CRYPTO
+
+symbols: []
